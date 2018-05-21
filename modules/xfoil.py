@@ -1,0 +1,1073 @@
+"""
+Original file from Pedro
+"""
+
+
+
+import datetime
+import math
+import ntpath
+import os  # To check for already existing files and delete them
+import shutil  # Modules necessary for saving multiple plots
+import subprocess as sp
+import time
+
+import numpy as np
+
+from settings import path_xfoil, logging, path_output
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#                       	Core Functions
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+class XfoilAPI:
+    """
+    Set of functions to interact with Xfoil via the command line
+    """
+
+    def __init__(self, airfoil, alpha=0, reynolds=0, mach=0, n_iterations=100, gdes=True, flaps=None):
+        # logging.info('\nStarting XfoilAPI(%s)' % str(inspect.getargs(XfoilAPI.__init__).args))
+
+        self.viscid = True if reynolds > 0 else False
+
+        self.multiple = True if isinstance(alpha, np.array) else False
+        self.gdes = gdes
+        self.airfoil = airfoil
+        self.flaps = flaps
+        self.n_iterations = n_iterations
+        self.reynolds = reynolds
+        self.mach = mach
+        self.is_fpath = os.path.isfile(self.airfoil)
+        self.alpha = alpha
+
+        startupinfo = sp.STARTUPINFO()
+        startupinfo.dwFlags |= sp.STARTF_USESHOWWINDOW
+
+        # Calling xfoil with Poper
+        self.ps = sp.Popen([path_xfoil], stdin=sp.PIPE, stdout=0, stderr=None, startupinfo=startupinfo)
+
+    def issue_cmd(self, cmds):
+        """
+        :param cmds: list of commands to pass to Xfoil
+        """
+        if isinstance(cmds, str):
+            cmds = [cmds]
+
+        for cmd in cmds:
+            self.ps.stdin.write(cmd + '\n')
+            logging.DEBUG(' - Issue_cmd: "%s"' % cmd)
+
+    def load_geometry(self):
+
+        self.issue_cmd('norm')  # Normalize geometry
+        if self.is_fpath:  # Given airfoil is a file path
+            self.issue_cmd('load %s' % self.airfoil)
+        else:
+            self.issue_cmd(self.airfoil)
+
+        self.issue_cmd(['', 'pane', ''])
+
+        if self.gdes:  # Adaptating points for better plots
+            self.issue_cmd('gdes')  # enter gdes menu
+            self.issue_cmd('CADD')  # add points at corners
+            self.issue_cmd(['', '', '', ''])  # accept default input
+            self.issue_cmd('PANEL')  # regenerate paneling
+
+        if self.flaps:
+            self.issue_cmd('gdes')  # enter gdes menu
+            self.issue_cmd('FLAP')  # enter FLAP menu
+            self.issue_cmd('%f' % self.flaps[0])  # insert x location
+            self.issue_cmd('%f' % self.flaps[1])  # insert y location
+            self.issue_cmd('%f' % self.flaps[2])  # ainsesrt deflection in degrees
+            self.issue_cmd('eXec')  # set buffer airfoil as current airfoil
+            self.issue_cmd('')  # exit gdes menu
+
+    def save_coordinates(self):
+        self.issue_cmd('SAVE')
+        self.issue_cmd('Defaults_coord' + '_' + self.airfoil)
+        self.issue_cmd('Y')
+
+    def run_analysis(self):
+
+        self.issue_cmd('OPER')  # Opening OPER module in Xfoil
+        self.issue_cmd('iter')
+        self.issue_cmd('%d' % self.n_iterations)
+        if self.viscid:
+            self.issue_cmd('v')  # Defining the system as viscous
+            self.issue_cmd('%f' % self.reynolds)  # Defining Reynolds number
+
+        self.issue_cmd('MACH %s' % self.mach)  # Mach number for Prandtl-Gauber correlation
+
+    def prepare_results(self, fname=None, eraze=False):
+
+        # Polar or one Alpha??
+        self.issue_cmd('PACC')
+        if not fname:
+            fname = 'Dummy_fname_'
+
+            if self.is_fpath:
+                foil_name = ntpath.basename(self.airfoil)
+                fname += foil_name
+            else:
+                fname += self.airfoil
+
+        fpath = path_output + fname  # check if file already exists
+
+        if os.path.isfile(fpath):
+            if eraze:
+                os.remove(fpath)
+            else:
+                fpath += '_2'
+        self.issue_cmd(str(fpath))
+        self.issue_cmd('')
+
+        if self.multiple:
+            if not os.path.exists(fpath):
+                os.makedirs(fpath)
+
+        else:
+            pass
+
+    def submit(self, output, save=True):
+
+        if output == "Alfa_L_0":
+            self.issue_cmd('CL 0')
+
+        else:
+            # Submit job for given angle of attack
+            self.issue_cmd('ALFA %.4f' % (self.alpha,))
+            if save:
+                self.issue_cmd('HARD')
+                shutil.copyfile('plot.ps', 'plot_{!s}_{!s}_{!s}.ps'.format(
+                    output, self.airfoil, self.alpha))
+            if output == 'Cp':
+                # Creating the file with the Pressure Coefficients
+                filename = file_name(self.airfoil, self.alpha, output)
+
+                self.issue_cmd('CPWR %s' % filename)
+
+            if output == 'Dump':
+                # Creating the file with the Pressure Coefficients
+                filename = file_name(self.airfoil, self.alpha, output)
+                self.issue_cmd('DUMP %r' % filename)
+
+    def quit(self):
+        """ Stops everything """
+        self.issue_cmd('')  # From whatever mode we are in
+        self.issue_cmd('QUIT')  # From stdin
+        self.ps.stdin.close()  # From popen
+        self.ps.wait()
+
+
+def call(airfoil, alfas='none', output='Cp', Reynolds=0, Mach=0, plots=False,
+         naca=True, gdes=False, iteration=10, flap=None, pane=False,
+         norm=True):
+    """ Call xfoil through Python.
+
+    The input variables are:
+
+    :param airfoil: if NACA is false, airfoil is the name of the plain
+           filewhere the airfoil geometry is stored (variable airfoil).
+           If NACA is True, airfoil is the naca series of the airfoil
+           (i.e.: naca2244). By default NACA is False.
+
+    :param alfas: list/array/float/int of angles of attack.
+
+    :param output: defines the kind of output desired from xfoil.  There
+           are four posssible choices (by default, Cp is chosen):
+
+          - Cp: generates files with Pressure coefficients for
+                desired alfas.
+          - Dump: generates file with Velocity along surface, Delta
+                  star,theta and Cf vs s,x,y for several alfas.
+          - Polar: generates file with CL, CD, CM, CDp, Top_Xtr,
+                   Bot_Xtr.
+          - Alfa_L_0: generates a file with the value of the angle
+                      of attack that lift is equal to zero.
+          - Coordinates: returns the coordinates of a NACA airfoil.
+
+    :param Reynolds: Reynolds number in case the simulation is for a
+          viscous flow. In case not informed, the code will assume
+          inviscid.
+
+    :param Mach: Mach number in case the simulation has to take in
+          account compressibility effects through the Prandtl-Glauert
+          correlation. If not informed, the code will not use the
+          correction. For logical reasons, if Mach is informed a
+          Reynolds number different from zero must also be informed.
+
+    :param  plots: the code is able to save in a .ps file all the plots
+          of Cp vs.alfa. By default, this option is deactivated.
+
+    :param naca: Boolean variable that defines if the code imports an
+          airfoil from a file or generates a NACA airfoil.
+
+    :param gdes: XFOIL function that improves the airfoil shape in case
+          the selected points do not provide a good shape. The CADD
+          function is also used. For more information about these
+          functions, use the XFOIL manual.
+
+    :param iteration: changes how many times XFOIL will try to make the
+          results converge. Speciallt important for viscous flows
+
+    :param flap: determines if there is a flap. In case there is the
+          expected input is [x_hinge, y_hinge, deflection(angles)].
+          y_hinge is determined to be exactly in the middle between the
+          upper and lower surfaces.
+
+    :param pane: if there are more than 495 surface points, the paneling
+          method will not be used. Need to use the PANE subroutine to
+		  solve this. It will find the best points that represent the
+		  geometry (only 160 of them).
+
+    :param norm: For good results using the panel method, Xfoil
+          requires normalized coordinates, so this option should
+          always be True.
+
+    :rtype: dictionary with outputs relevant to the specific output type.
+            Usually x,y coordinates will be normalized.
+
+    As a side note, it is much more eficient to run a single run with
+    multiple angles of attack rather than multiple runs, each with a
+    single angle of attack.
+
+    Created on Sun Mar  9 14:58:25 2014
+
+    Last update Fr Jul 13 15:38:40 2015
+
+    @author: Pedro Leal (Based on Hakan Tiftikci's code)
+    """
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #                               Functions
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def issueCmd(cmd, echo=True):
+        """Submit a command through PIPE to the command line, therefore
+        leading the commands to xfoil.
+
+        @author: Hakan Tiftikci
+        """
+        _str = cmd + '\n'
+        _str = _str.encode('utf-8')
+        ps.stdin.write(_str)
+        if echo:
+            print(cmd)
+
+    def submit(output, alfa):
+        """Submit job to xfoil and saves file.
+
+        Standard output file= function_airfoil_alfa.txt, where alfa has
+        4 digits, where two of them are for decimals. i.e.
+        cp_naca2244_0200. Analysis for Pressure Coefficients for a
+        naca2244 at an angle of degrees.
+
+        Possible to output other results such as theta, delta star
+        through the choice of the ouput, but not implemented here.
+
+        @author: Pedro Leal (Based on Hakan Tiftikci's code)
+        """
+
+        if output == "Alfa_L_0":
+            issueCmd('CL 0')
+
+        else:
+            # Submit job for given angle of attack
+            issueCmd('ALFA %.4f' % (alfa,))
+            if plots:
+                issueCmd('HARD')
+                shutil.copyfile('plot.ps', 'plot_{!s}_{!s}_{!s}.ps'.format(
+                    output, airfoil, alfa))
+            if output == 'Cp':
+                # Creating the file with the Pressure Coefficients
+                filename = file_name(airfoil, alfas, output)
+                try:
+                    os.remove(filename)
+                except OSError:
+                    pass
+                # Before writing file, denormalize it
+                issueCmd('CPWR %s' % filename)
+
+            if output == 'Dump':
+                # Creating the file with the Pressure Coefficients
+                filename = file_name(airfoil, alfas, output)
+                try:
+                    os.remove(filename)
+                except OSError:
+                    pass
+
+                issueCmd('DUMP %r' % filename)
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #                Characteristics of the simulation
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # By default the code considers the flow to be inviscid.
+    Viscid = False
+    if Reynolds != 0:
+        Viscid = True
+    # Is alpha given or not?(in case of Alfa_L_0, then alfas=False)
+    if alfas != 'none':
+        print(type(alfas))
+        # Single or multiple runs?
+        if type(alfas) == list or type(alfas) == np.ndarray:
+            Multiple = True
+        elif type(alfas) == int or type(alfas) == float or \
+                type(alfas) == np.float64:
+            Multiple = False
+    elif (output == "Alfa_L_0" or output == "Coordinates") and alfas == 'none':
+        Multiple = False
+    elif output == "Alfa_L_0" and alfas != 'none':
+        raise Exception("To find alpha_L_0, alfas must not be defined")
+    elif output != "Alfa_L_0" and alfas == 'none':
+        raise Exception("To find anything except alpha_L_0, you need to "
+                        "define the values for alfa")
+
+    # startupinfo = sp.STARTUPINFO()
+    # startupinfo = None
+    # startupinfo.dwFlags |= sp.STARTF_USESHOWWINDOW
+    # Random output variable to avoid writing stuff from xfoil on the
+    # console
+    sout = 0
+    # Calling xfoil with Poper
+    ps = sp.Popen([path_xfoil],
+                  stdin=sp.PIPE,
+                  stdout=sout,
+                  stderr=None)
+
+    # Loading geometry
+    if norm:
+        issueCmd('norm_coords')
+    if not naca:
+        issueCmd('load %s' % airfoil)
+    else:
+        issueCmd('%s' % airfoil)
+
+    # Once you load a set of points in Xfoil you need to create a
+    # name, however we do not need to give it a name
+    issueCmd('')
+
+    if pane:
+        issueCmd('pane')
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #             Adapting points for better plots
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if gdes:
+        issueCmd('gdes')  # enter gdes menu
+        issueCmd('CADD')  # add points at corners
+        issueCmd('')  # accept default input
+        issueCmd('')  # accept default input
+        issueCmd('')  # accept default input
+        issueCmd('')  # accept default input
+        issueCmd('PANEL')  # regenerate paneling
+    # ==============================================================
+    #                              Flaps
+    # ===============================================================
+    if flap != None:
+        issueCmd('gdes')  # enter gdes menu
+        issueCmd('FLAP')  # enter FLAP menu
+        issueCmd('%f' % flap[0])  # insert x location
+        issueCmd('%f' % flap[1])  # insert y location
+        issueCmd('%f' % flap[2])  # ainsesrt deflection in degrees
+        issueCmd('eXec')  # set buffer airfoil as current airfoil
+        issueCmd('')  # exit gdes menu
+    # If output equals Coordinates, no analysis will be realized, only the
+    # coordinates of the shape will be outputed
+    if output == 'Coordinates':
+        issueCmd('SAVE')
+        issueCmd(output + '_' + airfoil)
+        # In case there is alread a file with that name, it will replace it.
+        # The yes stands for YES otherwise Xfoil will do nothing with it.
+        issueCmd('Y')
+    else:
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Opening OPER module in Xfoil
+        issueCmd('OPER')
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        #                Applying effects of vicosity
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        issueCmd('iter')
+        issueCmd('%d' % iteration)
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        #                Applying effects of vicosity
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if Viscid:
+            # Defining the system as viscous
+            issueCmd('v')
+            # Defining Reynolds number
+            issueCmd('%f' % Reynolds)
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        #    Defining Mach number for Prandtl-Gauber correlation
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # issueCmd('MACH {!s}'.format(Mach))
+        issueCmd('MACH %s' % Mach)
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        #                     Submitting
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if output == 'Polar' or output == 'Alfa_L_0':
+            issueCmd('PACC')
+            # All file names in this library are generated by the
+            # filename functon.
+            filename = file_name(airfoil, alfas, output)
+            try:
+                os.remove(filename)
+            except OSError:
+                pass
+
+            issueCmd('%s' % filename)
+            issueCmd('')
+
+        # For several angles of attack
+        if Multiple:
+            for alfa in alfas:
+                submit(output, alfa)
+
+        # For only one angle of attack
+        if not Multiple:
+            submit(output, alfas)
+
+        # Exiting
+        # From OPER mode
+        issueCmd('')
+    # From xfoil
+    issueCmd('QUIT')
+    # From stdin
+    ps.stdin.close()
+    # From popen
+    ps.wait()
+
+
+def create_input(x, y_u, y_l=None, filename='test', different_x_upper_lower=False):
+    """Create a plain file that XFOIL can read.
+
+    XFOIL only reads file from the TE to the LE from the upper part
+    first and then from the LE to the TE through the pressure surface.
+
+    Inputs:
+        - x: list of coordinates along the chord
+
+        - y_u: list of coordinates normal to the chord for the upper
+          surface. If y_l is not defined it is the y vector of the whole
+          upper surface,
+
+        - y_l: list of coordinates normal to the chord for the lower
+          surface
+
+        - file_name: label used for the file created
+
+    Created on Thu Feb 27 2014
+
+    @author: Pedro Leal
+    """
+
+    if different_x_upper_lower:
+        y = y_u
+    else:
+        # XFOIL likes to read the files from the TE to the LE from the
+        # upper part first and then from the LE to the TE through the
+        # pressure surface
+        x_upper = x
+        x_under = np.delete(x_upper, -1)[::-1]
+        x = np.append(x_upper, x_under)
+
+        y_l = np.delete(y_l, -1)[::-1]
+        y = np.append(y_u, y_l)
+    # Creating files for xfoil processing
+    DataFile = open(filename, 'w')
+    for i in range(0, len(x)):
+        DataFile.write('     %f    %f\n' % (x[i], y[i]))
+    DataFile.close()
+
+    return 0
+
+
+def prepare_xfoil(Coordinates_Upper, Coordinates_Lower, chord,
+                  reposition=False, FSI=False):
+    """
+    The upper and lower functions will be the points in ordered
+    fashion. Because of the way that XFOIL works the points start at
+    the Trailing Edge on the upper surface going trough the Leading
+    Edge and returning to the Trailing Edge form the bottom surface.
+    """
+
+    # noinspection PyUnusedLocal,PyUnusedLocal
+    def Reposition(CoordinatesU, CoordinatesL):
+        """
+        Reposition the airfoils coordinates so that the leading
+        edge is at x=y=0 and that the the trailing edge is on x=0 axis.
+        """
+
+        # Find the coordinates of the trailing edge
+        LE = {'x': 0, 'y': 0}
+        cx = CoordinatesU['x']
+        LE['x'] = min(cx)
+        index_LE = cx.index(LE['x'])
+        LE['y'] = cx[index_LE]
+
+        All_Rotated_Coordinates = {}
+        count = 0
+        for Coordinates in [CoordinatesU, CoordinatesL]:
+            # Repositioning Leading Edge
+            for key in Coordinates:
+                c = Coordinates[key]
+                c = [i - LE[key] for i in c]
+                Coordinates[key] = c
+        """ Find the coordinates of the trailing edge. Because of the
+        thickness of the TE, it is necessary to find the point with
+        max(x) for both surfaces and take the average between them
+        to find the actual TE.
+        """
+
+        TE = {'x': 0, 'y': 0}
+
+        cxU = CoordinatesU['x']
+        cyU = CoordinatesU['y']
+        TExU = max(cxU)
+        index_TE = cxU.index(TExU)
+        TEyU = cyU[index_TE]
+
+        cxL = CoordinatesL['x']
+        cyL = CoordinatesL['y']
+        TExL = max(cxL)
+        index_TE = cxL.index(TExL)
+        TEyL = cyL[index_TE]
+
+        TE['x'] = (TExU + TExL) / 2.
+        TE['y'] = (TEyU + TEyL) / 2.
+
+        # Rotating according to the position of the trailing edge
+        theta = math.atan(TE['y'] / TE['x'])
+
+        # Rotation transformation Matrix
+        T = [[math.cos(theta), math.sin(theta)],
+             [-math.sin(theta), math.cos(theta)]]
+
+        for Coordinates in [CoordinatesU, CoordinatesL]:
+            Rotated_Coordinates = {'x': [], 'y': []}
+            for i in range(len(Coordinates['x'])):
+                cx = Coordinates['x'][i]
+                cy = Coordinates['y'][i]
+                rot_x = T[0][0] * cx + T[0][1] * cy
+                rot_y = T[1][0] * cx + T[1][1] * cy
+                Rotated_Coordinates['x'].append(rot_x)
+                Rotated_Coordinates['y'].append(rot_y)
+            All_Rotated_Coordinates['%s' % count] = Rotated_Coordinates
+            count += 1
+        # If there is a great rotation, noded that are not at the trailing edge
+        # can have a smaller x-coordinate. Have to rotate in relation to TE,
+        # and then translate. Angle gamma
+        if min(All_Rotated_Coordinates['0']['x']) < 0 or min(All_Rotated_Coordinates['1']['x']) < 0:
+            count = 0
+
+            cxU = All_Rotated_Coordinates['0']['x']
+            cyU = All_Rotated_Coordinates['0']['y']
+            TExU = max(cxU)
+
+            cxL = All_Rotated_Coordinates['1']['x']
+            cyL = All_Rotated_Coordinates['1']['y']
+            TExL = max(cxL)
+
+            x_TE = (TExU + TExL) / 2.
+            print('trailing edge x', x_TE)
+            for i in range(len(cxU)):
+                cxU[i] = cxU[i] - x_TE
+            for i in range(len(cxL)):
+                cxL[i] = cxL[i] - x_TE
+            # find leading edge (it is the most distant node from the trailing edge)
+            max_d = 0
+            x_LE = 0
+            y_LE = 0
+
+            for i in range(len(cxU)):
+                d_i = math.sqrt(cxU[i] ** 2 + cyU[i] ** 2)
+                if d_i > max_d:
+                    max_d = d_i
+                    x_LE = cxU[i]
+                    y_LE = cyU[i]
+
+            for i in range(len(cxL)):
+                d_i = math.sqrt(cxL[i] ** 2 + cyL[i] ** 2)
+                if d_i > max_d:
+                    max_d = d_i
+                    x_LE = cxL[i]
+                    y_LE = cyL[i]
+
+            # Calculate rotation angle
+            gamma = math.atan(y_LE / x_LE)
+
+            # Rotation transformation Matrix
+            T = [[math.cos(gamma), math.sin(gamma)],
+                 [-math.sin(gamma), math.cos(gamma)]]
+
+            # Find x-coordinate of leading edge to subtract afterwards
+            rotated_x_LE = T[0][0] * x_LE + T[0][1] * y_LE + x_TE
+            rotated_y_LE = T[1][0] * x_LE + T[1][1] * y_LE
+
+            old_Rotated_Coordinates = All_Rotated_Coordinates
+            for Coordinates in [{'x': cxU, 'y': cyU}, {'x': cxL, 'y': cyL}]:
+                Rotated_Coordinates = {'x': [], 'y': []}
+                for i in range(len(Coordinates['x'])):
+                    cx = Coordinates['x'][i]
+                    cy = Coordinates['y'][i]
+                    rot_x = T[0][0] * cx + T[0][1] * cy
+                    rot_y = T[1][0] * cx + T[1][1] * cy
+                    Rotated_Coordinates['x'].append(rot_x + x_TE - rotated_x_LE)
+                    Rotated_Coordinates['y'].append(rot_y)
+
+                All_Rotated_Coordinates['%s' % count] = Rotated_Coordinates
+                count += 1
+        return All_Rotated_Coordinates['0'], All_Rotated_Coordinates['1']
+
+    upper = []
+    lower = []
+    log.info("Starting to prepare points")
+
+    # At first we'll organize the files by its x values
+    for i in range(len(Coordinates_Upper['x'])):
+        # For each x value, we will check the correpondent y value so
+        # that we can classify them as upper or lower
+        upper.append([Coordinates_Upper['x'][i] / chord,
+                      Coordinates_Upper['y'][i] / chord])
+
+    for i in range(len(Coordinates_Lower['x'])):
+        # For each x value, we will check the correpondent y value so
+        # that we  can classify them as upper or lower
+        lower.append([Coordinates_Lower['x'][i] / chord,
+                      Coordinates_Lower['y'][i] / chord])
+    log.info("Sorting Stuff up")
+
+    if reposition:
+        # Sort in a convenient way for calculating the error
+        upper = sorted(upper, key=lambda coord: coord[0], reverse=False)
+        lower = sorted(lower, key=lambda coord: coord[0], reverse=False)
+        log.info('Repositioning')
+        cu = {'x': [], 'y': []}
+        cl = {'x': [], 'y': []}
+        for i in range(len(upper)):
+            cu['x'].append(upper[i][0])
+            cu['y'].append(upper[i][1])
+        for i in range(len(lower)):
+            cl['x'].append(lower[i][0])
+            cl['y'].append(lower[i][1])
+        upper, lower = Reposition(cu, cl)
+        log.info("Done preparing points")
+        return upper, lower
+    elif FSI:
+        upper = sorted(upper, key=lambda coord: coord[0], reverse=False)
+        lower = sorted(lower, key=lambda coord: coord[0], reverse=False)
+        log.info("Done preparing points")
+        return upper, lower
+    else:
+        # Sort in a way that comprehensible for xfoil and elimates the
+        # repeated point at the LE
+        upper = sorted(upper, key=lambda coord: coord[0], reverse=True)
+        lower = sorted(lower, key=lambda coord: coord[0], reverse=False)[1:]
+        Coordinates = upper + lower
+        log.info("Done preparing points")
+        return Coordinates
+
+
+def output_reader(filename, sep='\t', output=None, rows_to_skip=0,
+                  header=0, delete=False, structure=False,
+                  type_structure=None):
+    """
+    Function that opens files of any kind. Able to skip rows and
+    read headers if necessary.
+
+    Inputs:
+        - filename: just the name of the file to read.
+
+        - separator: Main kind of separator in file. The code will
+          replace any variants of this separator for processing. Extra
+          components such as end-line, kg m are all eliminated. Separator
+		  can also be a list of separators to use
+
+        - output: defines what the kind of file we are opening to
+          ensure we can skip the right amount of lines. By default it
+          is None so it can open any other file.
+
+        - rows_to_skip: amount of rows to initialy skip in the file. If
+          the output is different then None, for the different types of
+          files it is defined as:
+          - Polar files = 10
+          - Dump files = 0
+          - Cp files = 2
+          - Coordinates = 1
+
+        - header: The header list will act as the keys of the output
+          dictionary. For the function to work, a header IS necessary.
+          If not specified by the user, the function will assume that
+          the header can be found in the file that it is opening.
+
+        - delete: if True, deletes file read.
+
+        - structure: the file that he is being read has a given structure. For
+          a file with the following structure:
+                0
+                0 0
+                0.0996174 0.00873875
+                1
+                0.0996174 0.00873875
+                0.199258 0.0172063
+          For the case where the header:
+                >> header = ['element', 'x1', 'y1', 'x2', 'y2']
+          A possible structure is:
+                >> structure = [['element'], ['x1', 'y1'], ['x2', 'y2']]
+
+        - type_structure: ['string', 'time', 'float', 'time', 'float']
+
+    Output:
+        - Dictionary with all the header values as keys
+
+    Created on Thu Mar 14 2014
+    @author: Pedro Leal
+    """
+    if header != 0:
+        if type_structure == None:
+            type_structure = len(header) * ['float']
+
+    def format_output(variable, type_structure):
+        if type_structure == None:
+            return float(variable)
+        if type_structure == 'seconds':
+            try:
+                seconds = time.strptime(variable.split('.')[0], '%H:%M:%S')
+                miliseconds = float(variable.split('.')[1]) * 0.1 ** len(variable.split('.')[1])
+                total = miliseconds + datetime.timedelta(hours=seconds.tm_hour, minutes=seconds.tm_min,
+                                                         seconds=seconds.tm_sec).total_seconds()
+
+            except:
+                seconds = time.strptime(variable.split('.')[0], '%M:%S')
+                miliseconds = float(variable.split('.')[1]) * 0.1 ** len(variable.split('.')[1])
+                total = miliseconds + datetime.timedelta(hours=seconds.tm_hour, minutes=seconds.tm_min,
+                                                         seconds=seconds.tm_sec).total_seconds()
+            return total
+        elif type_structure == 'string':
+            return variable
+        elif type_structure == 'float':
+            return float(variable)
+
+    # In case we are using an XFOIL file, we define the number of rows
+    # skipped
+    if output == 'Polar' or output == 'Alfa_L_0':
+        rows_to_skip = 10
+    elif output == 'Dump':
+        rows_to_skip = 0
+    elif output == 'Cp':
+        rows_to_skip = 2
+    elif output == 'Coordinates':
+        rows_to_skip = 1
+    # n is the amount of lines to skip
+    Data = {}
+    if header != 0:
+        header_done = True
+        for head in header:
+            Data[head] = []
+    else:
+        header_done = False
+    count_skip = 0
+
+    # Add the possibility of more than one separator
+    if type(sep) != list:
+        separator_list = [sep]
+    else:
+        separator_list = sep
+    structure_count = 0
+    with open(filename, "r") as myfile:
+        # Jump first lines which are useless
+        for line in myfile:
+            if count_skip < rows_to_skip:
+                count_skip += 1
+                # Basically do nothing
+            elif not header_done:
+                # If the user did not specify the header the code will
+                # read the first line after the skipped rows as the
+                # header
+                if header == 0:
+                    # Open line and replace anything we do not want (
+                    # variants of the separator and units)
+                    for sep in separator_list:
+                        line = line.replace(sep + sep + sep +
+                                            sep + sep + sep, ' ').replace(sep
+                                                                          + sep + sep + sep + sep,
+                                                                          ' ').replace(
+                            sep + sep + sep +
+                            sep, ' ').replace(sep + sep + sep,
+                                              ' ').replace(sep + sep, ' ').replace(sep, ' ').replace("\n",
+                                                                                                     "").replace(
+                            "(kg)", "").replace("(m)",
+                                                "").replace("(Pa)", "").replace("(in)", "").replace("#", "")
+
+                    header = line.split(' ')
+                    n_del = header.count('')
+                    for n_del in range(0, n_del):
+                        header.remove('')
+                    for head in header:
+                        Data[head] = []
+                    # To avoid having two headers, we assign the False
+                    # value to header which will not let it happen
+                    header_done = True
+                # If the user defines a list of values for the header,
+                # the code reads it and creates libraries with it.
+                elif type(header) == list:
+                    for head in header:
+                        Data[head] = []
+                    header_done = True
+                if type_structure == None:
+                    type_structure = len(header) * ['float']
+            else:
+                if not structure:
+                    for sep in separator_list:
+                        line = line.replace(sep + sep + sep,
+                                            ' ').replace(sep + sep, ' ').replace(sep,
+                                                                                 ' ').replace("\n",
+                                                                                              "").replace(
+                            '---------', '').replace(
+                            '--------', '').replace('-------', '').replace('------',
+                                                                           '').replace('-', ' -')
+
+                    line_components = line.split(' ')
+
+                    n_del = line_components.count('')
+                    for n in range(0, n_del):
+                        line_components.remove('')
+
+                    if line_components:
+                        for j in range(0, len(line_components)):
+
+                            try:
+                                Data[header[j]].append(format_output(line_components[j],
+                                                                     type_structure[j]))
+                            except:
+                                log.info('Error when recording for: ')
+                                log.info('Line components:', line_components)
+                                log.info('ttpe structure:', type_structure)
+                                log.info('index:', j)
+                                log.info('header:', header)
+                                raise ValueError('Something went wrong')
+                # Use structure code
+                else:
+                    current_structure = structure[structure_count]
+
+                    line = line.replace(sep + sep + sep,
+                                        ' ').replace(sep + sep, ' ').replace(sep,
+                                                                             ' ').replace("\n", "").replace(
+                        '---------', '').replace(
+                        '--------', '').replace('-------', '').replace('------',
+                                                                       '').replace('-', ' -')
+
+                    line_components = line.split(' ')
+
+                    n_del = line_components.count('')
+                    for n in range(0, n_del):
+                        line_components.remove('')
+
+                    if line_components:
+                        for j in range(0, len(line_components)):
+                            Data[current_structure[j]].append(format_output(line_components[j],
+                                                                            type_structure[j]))
+                        structure_count += 1
+                        if structure_count == len(structure):
+                            structure_count = 0
+                # else DO NOTHING!
+    # If delete file True, remove file from directory
+    if delete:
+        os.remove(filename)
+    return Data
+
+
+def alfa_for_file(alfa):
+    """Generate standard name for angles. This is mainly used by the
+    file_name function.
+
+    @author: Pedro Leal
+    """
+
+    alfa = '%.2f' % alfa
+    inter, dec = alfa.split('.')
+    inter_number = int(inter)
+    inter = '%.2d' % inter_number
+    if inter_number < 0:
+        inter = 'n' + inter
+    alfa = inter + dec
+    return alfa
+
+
+def file_name(airfoil, alfas='none', output='Cp'):
+    """Create standard name for the files generated by XFOIL.
+
+    :param airfoil: the name of the plain file where the airfoil
+           geometry is stored (variable airfoil).
+
+    :param alfas: list/array/float/int of a single angle of attack for
+          Cp and Dump, but the whole list for a Polar. Only the initial
+          and the final values are used
+
+    :param output: defines the kind of output desired from xfoil. There
+           are three posssible choices:
+
+           - Cp: generates files with Pressure coefficients for
+                 desired alfas
+           - Dump: generates file with Velocity along surface, Delta
+                   star and theta and Cf vs s,x,y for several alfas
+           - Polar: generates file with CL, CD, CM, CDp, Top_Xtr,
+                    Bot_Xtr
+           - Alpha_L_0: calculate the angle of attack that lift is
+                        zero
+
+    :returns: The output has the following format (by default, Cp is chosen):
+
+        - for Cp and Dump: output_airfoil_alfa
+           >>> file_name('naca2244', alfas=2.0, output='Cp')
+           >>> Cp_naca2244_0200
+
+        - for Polar: Polar_airfoil_alfa_i_alfa_f
+           >>> file_name('naca2244', alfas=[-2.0, 2.0], output='Polar')
+           >>> Polar_naca2244_n0200_0200
+
+        - for Alpha_L_0: Alpha_L_0_airfoil
+           >>> file_name('naca2244', output='Alpha_L_0')
+           >>> Alpha_L_0_naca2244
+
+    Created on Thu Mar 16 2014
+    @author: Pedro Leal
+    """
+
+    # At first verify if alfas was defined
+    if alfas == 'none':
+        filename = '%s_%s' % (output, airfoil)
+    elif alfas != 'none':
+        if output == 'Cp' or output == 'Dump':
+            if type(alfas) == list:
+                alfas = alfas[0]
+            alfa = alfa_for_file(alfas)
+
+            filename = '%s_%s_%s' % (output, airfoil, alfa)
+
+        if output == 'Polar':
+            # In case it is only for one angle of attack, the same
+            # angle will be repeated. This is done to keep the
+            # formating
+            if type(alfas) == int or type(alfas) == float or \
+                    type(alfas) == np.float64:
+                alfas = [alfas]
+                alfa_i = alfa_for_file(alfas[0])
+                alfa_f = alfa_for_file(alfas[-1])
+                # Name of file with polar information
+            else:
+                alfa_i = alfas[0]
+                alfa_f = alfas[-1]
+            filename = '%s_%s_%s_%s' % (output, airfoil, alfa_i, alfa_f)
+    return filename
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#                       	Utility functions
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+def find_coefficients(airfoil, alpha, Reynolds=0, iteration=10, NACA=True):
+    """Calculate the lift, drag, moment, friction etc coefficients of an airfoil"""
+    filename = file_name(airfoil, alpha, output='Polar')
+    # If file already exists, there is no need to recalculate it.
+    if not os.path.isfile(filename):
+        call(airfoil, alpha, Reynolds=Reynolds, output='Polar',
+             iteration=iteration, naca=NACA)
+    coefficients = {}
+    # Data from file
+    Data = output_reader(filename, output='Polar', delete=False)
+    for key in Data:
+        coefficients[key] = Data[key][0]
+    return coefficients
+
+
+def find_pressure_coefficients(airfoil, alpha, Reynolds=0, iteration=10,
+                               NACA=True, use_previous=False, chord=1.,
+                               PANE=False):
+    """Calculate the pressure coefficients of an airfoil"""
+    filename = file_name(airfoil, alpha, output='Cp')
+    # If file already exists, there is no need to recalculate it.
+    if not use_previous:
+        call(airfoil, alpha, Reynolds=Reynolds, output='Cp', iteration=iteration,
+             naca=NACA, pane=PANE)
+    else:
+        if not os.path.isfile(filename):
+            call(airfoil, alpha, Reynolds=Reynolds, output='Cp', iteration=iteration,
+                 naca=NACA, pane=PANE)
+    coefficients = {}
+    # Data from file
+    Data = output_reader(filename, output='Cp')
+
+    for key in Data:
+        coefficients[key] = Data[key]
+    if chord != 1.:
+        for i in range(Data[key]):
+            coefficients['x'] = coefficients['x'] * chord
+            coefficients['y'] = coefficients['y'] * chord
+    return coefficients
+
+
+# noinspection PyUnusedLocal,PyUnusedLocal
+def find_alpha_L_0(airfoil, Reynolds=0, iteration=10, NACA=True):
+    """
+    Calculate the angle of attack where the lift coefficient is equal
+    to zero."""
+    filename = file_name(airfoil, output='Alfa_L_0')
+    # If file already exists, there no need to recalculate it.
+    if not os.path.isfile(filename):
+        call(airfoil, output='Alfa_L_0', naca=NACA)
+    alpha = output_reader(filename, output='Alfa_L_0')['alpha'][0]
+    return alpha
+
+
+# noinspection PyUnusedLocal
+def M_crit(airfoil, pho, speed_sound, lift, c):
+    """Calculate the Critical Mach. This function was not validated.
+    Therefore use it with caution and please improve it.
+
+    @author: Pedro Leal
+    """
+    M_list = np.linspace(0.3, 0.7, 20)
+    alfas = np.linspace(-15, 5, 21)
+    Data_crit = {}
+    Data_crit['M'] = 0
+    Data_crit['CL'] = 0
+    Data_crit['alpha'] = 0
+    for M in M_list:
+        cl = (np.sqrt(1 - M ** 2) / (M ** 2)) * 2 * lift / pho / (speed_sound) ** 2 / c
+        call(airfoil, alfas, output='Polar', naca=True)
+        filename = file_name(airfoil, alfas, output='Polar')
+        Data = output_reader(filename, ' ', 10)
+        previous_iteration = Data_crit['CL']
+        for i in range(0, len(Data['CL'])):
+            if Data['CL'][i] >= cl and M > Data_crit['M']:
+                log.info('M = %s' % M)
+                Data_crit['M'] = M
+                Data_crit['CL'] = Data['CL'][i]
+                Data_crit['alpha'] = Data['alpha'][i]
+    #        if Data_crit['CL']==previous_iteration:
+    return Data_crit
+
+
+def old_main():
+    import matplotlib.pyplot as plt
+    upper = {'x': [0, .1, 10, 20, 30], 'y': [0, 2, 4, 2, 1]}
+    lower = {'x': [0, .1, 10, 20, 30], 'y': [0, -10, -2, -1, 0]}
+    plt.plot(lower['x'], lower['y'], 'r')
+    plt.plot(upper['x'], upper['y'], 'r', label='original data')
+    rotated_upper, rotated_lower = prepare_xfoil(upper, lower, 1.0, reposition=True)
+    log.info(rotated_upper)
+    log.info(rotated_lower)
+
+    plt.plot(rotated_lower['x'], rotated_lower['y'], 'b')
+    plt.plot(rotated_upper['x'], rotated_upper['y'], 'b', label='after LE rotation/translation')
+    plt.legend(loc='best')
+    plt.xlabel('x-coordinate')
+    plt.ylabel('y-coordinate')
+    plt.grid()
+    plt.show()
+
+
