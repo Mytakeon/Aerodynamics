@@ -2,8 +2,6 @@
 Original file from Pedro
 """
 
-
-
 import datetime
 import math
 import ntpath
@@ -11,15 +9,10 @@ import os  # To check for already existing files and delete them
 import shutil  # Modules necessary for saving multiple plots
 import subprocess as sp
 import time
-
+import inspect
 import numpy as np
 
 from settings import path_xfoil, logging, path_output
-
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#                       	Core Functions
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
 class XfoilAPI:
@@ -28,11 +21,11 @@ class XfoilAPI:
     """
 
     def __init__(self, airfoil, alpha=0, reynolds=0, mach=0, n_iterations=100, gdes=True, flaps=None):
-        # logging.info('\nStarting XfoilAPI(%s)' % str(inspect.getargs(XfoilAPI.__init__).args))
+        logging.info('\nStarting XfoilAPI(%s)')
 
         self.viscid = True if reynolds > 0 else False
 
-        self.multiple = True if isinstance(alpha, np.array) else False
+        self.multiple = True if isinstance(alpha, np.ndarray) else False
         self.gdes = gdes
         self.airfoil = airfoil
         self.flaps = flaps
@@ -42,11 +35,8 @@ class XfoilAPI:
         self.is_fpath = os.path.isfile(self.airfoil)
         self.alpha = alpha
 
-        startupinfo = sp.STARTUPINFO()
-        startupinfo.dwFlags |= sp.STARTF_USESHOWWINDOW
-
         # Calling xfoil with Poper
-        self.ps = sp.Popen([path_xfoil], stdin=sp.PIPE, stdout=0, stderr=None, startupinfo=startupinfo)
+        self.ps = sp.Popen([path_xfoil], stdin=sp.PIPE, stdout=0, stderr=None)
 
     def issue_cmd(self, cmds):
         """
@@ -624,7 +614,7 @@ def prepare_xfoil(Coordinates_Upper, Coordinates_Lower, chord,
 
     upper = []
     lower = []
-    log.info("Starting to prepare points")
+    logging.info("Starting to prepare points")
 
     # At first we'll organize the files by its x values
     for i in range(len(Coordinates_Upper['x'])):
@@ -638,13 +628,13 @@ def prepare_xfoil(Coordinates_Upper, Coordinates_Lower, chord,
         # that we  can classify them as upper or lower
         lower.append([Coordinates_Lower['x'][i] / chord,
                       Coordinates_Lower['y'][i] / chord])
-    log.info("Sorting Stuff up")
+    logging.info("Sorting Stuff up")
 
     if reposition:
         # Sort in a convenient way for calculating the error
         upper = sorted(upper, key=lambda coord: coord[0], reverse=False)
         lower = sorted(lower, key=lambda coord: coord[0], reverse=False)
-        log.info('Repositioning')
+        logging.info('Repositioning')
         cu = {'x': [], 'y': []}
         cl = {'x': [], 'y': []}
         for i in range(len(upper)):
@@ -654,12 +644,12 @@ def prepare_xfoil(Coordinates_Upper, Coordinates_Lower, chord,
             cl['x'].append(lower[i][0])
             cl['y'].append(lower[i][1])
         upper, lower = Reposition(cu, cl)
-        log.info("Done preparing points")
+        logging.info("Done preparing points")
         return upper, lower
     elif FSI:
         upper = sorted(upper, key=lambda coord: coord[0], reverse=False)
         lower = sorted(lower, key=lambda coord: coord[0], reverse=False)
-        log.info("Done preparing points")
+        logging.info("Done preparing points")
         return upper, lower
     else:
         # Sort in a way that comprehensible for xfoil and elimates the
@@ -667,7 +657,7 @@ def prepare_xfoil(Coordinates_Upper, Coordinates_Lower, chord,
         upper = sorted(upper, key=lambda coord: coord[0], reverse=True)
         lower = sorted(lower, key=lambda coord: coord[0], reverse=False)[1:]
         Coordinates = upper + lower
-        log.info("Done preparing points")
+        logging.info("Done preparing points")
         return Coordinates
 
 
@@ -843,11 +833,11 @@ def output_reader(filename, sep='\t', output=None, rows_to_skip=0,
                                 Data[header[j]].append(format_output(line_components[j],
                                                                      type_structure[j]))
                             except:
-                                log.info('Error when recording for: ')
-                                log.info('Line components:', line_components)
-                                log.info('ttpe structure:', type_structure)
-                                log.info('index:', j)
-                                log.info('header:', header)
+                                logging.info('Error when recording for: ')
+                                logging.info('Line components:', line_components)
+                                logging.info('ttpe structure:', type_structure)
+                                logging.info('index:', j)
+                                logging.info('header:', header)
                                 raise ValueError('Something went wrong')
                 # Use structure code
                 else:
@@ -985,18 +975,17 @@ def find_coefficients(airfoil, alpha, Reynolds=0, iteration=10, NACA=True):
 
 
 def find_pressure_coefficients(airfoil, alpha, Reynolds=0, iteration=10,
-                               NACA=True, use_previous=False, chord=1.,
+                               NACA=True, chord=1.,
                                PANE=False):
     """Calculate the pressure coefficients of an airfoil"""
-    filename = file_name(airfoil, alpha, output='Cp')
+
+    filename = 'result_27.05'
+
     # If file already exists, there is no need to recalculate it.
-    if not use_previous:
+    if not os.path.isfile(filename):
         call(airfoil, alpha, Reynolds=Reynolds, output='Cp', iteration=iteration,
              naca=NACA, pane=PANE)
-    else:
-        if not os.path.isfile(filename):
-            call(airfoil, alpha, Reynolds=Reynolds, output='Cp', iteration=iteration,
-                 naca=NACA, pane=PANE)
+
     coefficients = {}
     # Data from file
     Data = output_reader(filename, output='Cp')
@@ -1044,30 +1033,9 @@ def M_crit(airfoil, pho, speed_sound, lift, c):
         previous_iteration = Data_crit['CL']
         for i in range(0, len(Data['CL'])):
             if Data['CL'][i] >= cl and M > Data_crit['M']:
-                log.info('M = %s' % M)
+                logging.info('M = %s' % M)
                 Data_crit['M'] = M
                 Data_crit['CL'] = Data['CL'][i]
                 Data_crit['alpha'] = Data['alpha'][i]
     #        if Data_crit['CL']==previous_iteration:
     return Data_crit
-
-
-def old_main():
-    import matplotlib.pyplot as plt
-    upper = {'x': [0, .1, 10, 20, 30], 'y': [0, 2, 4, 2, 1]}
-    lower = {'x': [0, .1, 10, 20, 30], 'y': [0, -10, -2, -1, 0]}
-    plt.plot(lower['x'], lower['y'], 'r')
-    plt.plot(upper['x'], upper['y'], 'r', label='original data')
-    rotated_upper, rotated_lower = prepare_xfoil(upper, lower, 1.0, reposition=True)
-    log.info(rotated_upper)
-    log.info(rotated_lower)
-
-    plt.plot(rotated_lower['x'], rotated_lower['y'], 'b')
-    plt.plot(rotated_upper['x'], rotated_upper['y'], 'b', label='after LE rotation/translation')
-    plt.legend(loc='best')
-    plt.xlabel('x-coordinate')
-    plt.ylabel('y-coordinate')
-    plt.grid()
-    plt.show()
-
-
