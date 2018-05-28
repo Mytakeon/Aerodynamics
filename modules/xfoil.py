@@ -9,10 +9,15 @@ import os  # To check for already existing files and delete them
 import shutil  # Modules necessary for saving multiple plots
 import subprocess as sp
 import time
-import inspect
+
 import numpy as np
 
-from settings import path_xfoil, logging, path_output
+from settings import path_xfoil, path_output
+
+import logging
+log = logging.getLogger(__name__)
+
+
 
 
 class XfoilAPI:
@@ -21,8 +26,7 @@ class XfoilAPI:
     """
 
     def __init__(self, airfoil, alpha=0, reynolds=0, mach=0, n_iterations=100, gdes=True, flaps=None):
-        logging.info('\nStarting XfoilAPI(%s)')
-
+        log.info("XFOIL  -- %s" % str(locals()))
         self.viscid = True if reynolds > 0 else False
 
         self.multiple = True if isinstance(alpha, np.ndarray) else False
@@ -936,7 +940,7 @@ def file_name(airfoil, alfas='none', output='Cp'):
                 alfas = alfas[0]
             alfa = alfa_for_file(alfas)
 
-            filename = '%s_%s_%s' % (output, airfoil, alfa)
+            filename = '%s_%s_%s.txt' % (output, airfoil, alfa)
 
         if output == 'Polar':
             # In case it is only for one angle of attack, the same
