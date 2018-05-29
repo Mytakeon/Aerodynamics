@@ -37,6 +37,7 @@ class Airfoil:
         :type n_points: int
         """
 
+        self.tol = 1e-4
         self.kwargs = kwargs  # Saving, only for the title of the plot
         log.debug("Airfoil%s" % str(locals()))
         keys = list(kwargs.keys())
@@ -68,6 +69,43 @@ class Airfoil:
         if 'naca_string' in keys:
             self.naca_string = kwargs['naca_string']
             self.naca_handler()
+
+    def __repr__(self):
+        """
+        Representation of an Airfoil, is returned if Airfoil object is printed
+        """
+        return 'Airfoil(%s)' % self.kwargs
+
+    def __eq__(self, other):
+        """
+        An airfoil is 'equal' to another one if their their y-coordinates are very close.
+        """
+        e = self._compute_delta_y(other)
+        if e:
+            if e < self.tol:
+                return True
+            else:
+                return False
+        else:
+            return False
+
+    def _compute_delta_y(self, other):
+        """
+
+        :param other: Another airfoil to compare
+        :type other: Airfoil
+        :return: the sum of the squared difference between the two airfoil coordinates
+        :rtype: float
+        """
+        if isinstance(other, Airfoil):
+            if isinstance(other.y, np.ndarray):
+                if np.array_equal(self.x, other.x):  # Now we can compare the y values
+                    delta_y = np.subtract(self.y, other.y)
+                    e = np.sum(np.square(delta_y))
+                    return e
+
+            else:
+                log.error('If the x vectors are not the same, problem is more complicated')
 
     @property
     def x(self):
@@ -127,7 +165,7 @@ class Airfoil:
 
         plt.plot(self.x, self.y, color)
         plt.axis('equal')
-        plt.title('Airfoil%s' % self.kwargs)
+        plt.title(self.__repr__())
         plt.xlabel('x')
         plt.ylabel('y')
         plt.show()
@@ -450,4 +488,4 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
     n2412_1 = Airfoil(naca_string='NACA2412')
-    n2412_1.write_xy()
+    n2412_1.plot(plt)
