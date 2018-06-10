@@ -20,7 +20,7 @@ class Airfoil:
     """
 
     # List of possible input arguments
-    _init_kwargs = ('fpath', 'p', 'x_u', 'x_l', 'naca_string', 'n_points')
+    _init_kwargs = ('fpath', 'parsec', 'x_u', 'x_l', 'naca_string', 'n_points')
     n_points_default = 100
     closed_te = False  # If false, TE of NACA4 series has small thickness
 
@@ -39,16 +39,17 @@ class Airfoil:
         :type n_points: int
         """
 
+        self._p = None
         self.tol = 1e-4
         self.kwargs = kwargs  # Saving, only for the title of the plot
         log.debug("Airfoil%s" % str(locals()))
         keys = list(kwargs.keys())
 
-        for key, value in kwargs.items():
-            if key in self._init_kwargs:
-                setattr(self, key, value)  # Given input
+        for arg in self._init_kwargs:
+            if arg in kwargs:
+                setattr(self, arg, kwargs[arg])  # Given input
             else:
-                setattr(object=self, name=key, value=None)  # Unkown input, set as None
+                setattr(self, arg, None)  # Unkown input, set as None
 
         # Default number of points
         self.n_points = kwargs['n_points'] if 'n_points' in keys else self.n_points_default
@@ -63,14 +64,21 @@ class Airfoil:
         else:  # XY coordinate file has been given as an input
             self.read_xy_coords()
 
-        if 'p' in keys:  # PARSEC definition has been given as an input
-            self.p = kwargs['p']
+        if 'parsec' in keys:  # PARSEC definition has been given as an input
+            self._p = kwargs['parsec']
             self.unpack_parsec()
             self.y_l, self.y_u = self.parsec_to_y(self.p)
 
         if 'naca_string' in keys:
             self.naca_string = kwargs['naca_string']
             self.naca_handler()
+
+    @property
+    def p(self):
+        if self._p is None:
+            self._p = self.xy_to_parsec()
+            self.unpack_parsec()
+        return self._p
 
     def __repr__(self):
         """
@@ -178,41 +186,61 @@ class Airfoil:
     def parsec_to_y(self, p):
         """
         Solve the linear system to get PARSEC y coordinates
-        Required inputs: Xu, Xl, p
+
+        Source:
+        "An airfoil shape optimization technique coupling PARSEC parameterization and evolutionary algorithm"
+
         :return:
         """
-        # todo: Need to refind source and double check this. Espacially only p[2] in c_up??
 
         # Define matrix
-        c1 = np.array([1, 1, 1, 1, 1, 1])
-        c2 = np.array(
-            [p[1] ** 0.5, p[1] ** (3 / 2), p[1] ** (5 / 2), p[1] ** (7 / 2), p[1] ** (9 / 2), p[1] ** (11 / 2)])
-        c3 = np.array([1 / 2, 3 / 2, 5 / 2, 7 / 2, 9 / 2, 11 / 2])
-        c4 = np.array(
-            [(1 / 2) * p[1] ** (-1 / 2), (3 / 2) * p[1] ** (1 / 2), (5 / 2) * p[1] ** (3 / 2),
-             (7 / 2) * p[1] ** (5 / 2),
-             (9 / 2) * p[1] ** (7 / 2), (11 / 2) * p[1] ** (9 / 2)])
-        c5 = np.array([(-1 / 4) * p[1] ** (-3 / 2), (3 / 4) * p[1] ** (-1 / 2), (15 / 4) * p[1] ** (1 / 2),
-                       (35 / 4) * p[1] ** (3 / 2), (53 / 4) * p[1] ** (5 / 2), (99 / 4) * p[1] ** (7 / 2)])
-        c6 = np.array([1, 0, 0, 0, 0, 0])
+        def c(k):
+            r1 = np.array([1, 1, 1, 1, 1, 1])
+    
+            r2 = np.array([p[k] ** (1 / 2),
+                           p[k] ** (3 / 2),
+                           p[k] ** (5 / 2),
+                           p[k] ** (7 / 2),
+                           p[k] ** (9 / 2),
+                           p[k] ** (11 / 2)])
+    
+            r3 = np.array([1 / 2, 3 / 2, 5 / 2, 7 / 2, 9 / 2, 11 / 2])
+    
+            r4 = np.array([(1 / 2) * p[k] ** (-1 / 2),
+                           (3 / 2) * p[k] ** (1 / 2),
+                           (5 / 2) * p[k] ** (3 / 2),
+                           (7 / 2) * p[k] ** (5 / 2),
+                           (9 / 2) * p[k] ** (7 / 2),
+                           (11 / 2) * p[k] ** (9 / 2)])
+    
+            r5 = np.array([(-1 / 4) * p[k] ** (-3 / 2),
+                           (3 / 4) * p[k] ** (-1 / 2),
+                           (15 / 4) * p[k] ** (1 / 2),
+                           (35 / 4) * p[k] ** (3 / 2),  # Todo: 1/2 instead of 3/2, looks like mistake in article?
+                           (63 / 4) * p[k] ** (5 / 2),
+                           (99 / 4) * p[k] ** (7 / 2)])
+    
+            r6 = np.array([1, 0, 0, 0, 0, 0])
+    
+            return np.array([r1, r2, r3, r4, r5, r6])
 
-        c_up = np.array([c1, c2, c3, c4, c5, c6])
-
-        c7 = np.array([1, 1, 1, 1, 1, 1])
-        c8 = np.array([p[4] ** (1 / 2), p[4] ** (3 / 2),
-                       p[4] ** (5 / 2), p[4] ** (7 / 2), p[4] ** (9 / 2), p[4] ** (11 / 2)])
-        c9 = np.array([1 / 2, 3 / 2, 5 / 2, 7 / 2, 9 / 2, 11 / 2])
-        c10 = np.array([(1 / 2) * p[4] ** (-1 / 2), (3 / 2) * p[4] ** (1 / 2), (5 / 2) * p[4] ** (3 / 2),
-                        (7 / 2) * p[4] ** (5 / 2), (9 / 2) * p[4] ** (7 / 2), (11 / 2) * p[4] ** (9 / 2)])
-        c11 = np.array([(-1 / 4) * p[4] ** (-3 / 2), (3 / 4) * p[4] ** (-1 / 2), (15 / 4) * p[4] ** (1 / 2),
-                        (35 / 4) * p[4] ** (3 / 2), (53 / 4) * p[4] ** (5 / 2), (99 / 4) * p[4] ** (7 / 2)])
-        c12 = np.array([1, 0, 0, 0, 0, 0])
-
-        c_low = np.array([c7, c8, c9, c10, c11, c12])
+        c_up = c(1)
+        c_low = c(4)
 
         # todo: unsure why use radians instead of just tan here. Just following old matlab script for now.
-        b_up = np.array([p[7] + p[8] / 2, p[2], math.tan(p[9] - p[10] / 2), 0, p[3], math.sqrt(2 * p[0])])
-        b_low = np.array([-p[7] + p[8] / 2, p[5], math.tan(p[9] - p[10] / 2), 0, p[6], math.sqrt(2 * p[0])])
+        b_up = np.array([p[7] + p[8] / 2,
+                         p[2],
+                         math.tan(p[9] - p[10] / 2),
+                         0,
+                         p[3],
+                         math.sqrt(2 * p[0])])
+
+        b_low = np.array([-p[7] + p[8] / 2,
+                          p[5],
+                          math.tan(p[9] - p[10] / 2),
+                          0,
+                          p[3],
+                          math.sqrt(2 * p[0])])
 
         a_up = np.linalg.solve(c_up, b_up)
         a_low = np.linalg.solve(c_low, b_low)
@@ -233,6 +261,7 @@ class Airfoil:
 
         # p = [R_le, X_up, Z_up, ZXXup, X_low, Z_low, ZXXlow, Y_TE, t_TE, alpha_TE, beta_TE]
         p_init = np.array([0.032, 0.3, 0.08, 0, 0.3, 0.06, 0.0, 0.0211, 0.0, 0.0, 0.5])
+        # p_init = np.array([0.032, 0.3, 0.08, 0, 1, 0.06, 0.0, 0.03, 0.0, 0.0, 0])
         bounds = ((0.0, 0.5),  # r_le
                   (0.0, 1.0),  # x_up
                   (0.0, 0.2),  # z_up
@@ -330,162 +359,6 @@ class Airfoil:
 
         fpath = fpath + '/' + name + ".dat"
         np.savetxt(fpath, coord, delimiter=' ', fmt='%f')
-
-
-def CST(x, c, deltasz=None, Au=None, Al=None):
-    """
-    Based on the paper "Fundamental" Parametric Geometry Representations for
-    Aircraft Component Shapes" from Brenda M. Kulfan and John E. Bussoletti. 
-    The code uses a 1st order Bernstein Polynomial for the "Class Function" / 
-    "Shape Function" airfoil representation.
-    
-    The degree of polynomial is dependant on how many values there are for the
-    coefficients. The algorithm is able to use Bernstein Polynomials for any
-    order automatically. The algorithm is also able to analyze only the top or
-    lower surface if desired. It will recognize by the inputs given. i.e.:
-    for CST(x=.2,c=1.,deltasx=.2,Au=.7), there is only one value for Au, so it
-    is a Bernstein polynomial of 1st order for the upper surface. By ommiting 
-    Al the code will only input and return the upper surface.
-    
-    Although the code is flexible, the inputs need to be coesive. len(deltasz)
-    must be equal to the number of surfaces. Au and Al need to have the same 
-    length if a full analysis is being realized.    
-    
-    The inputs are:
-
-        - x:list or numpy. array of points along the chord, from TE and the LE,
-          or vice-versa. The code works both ways.
-          
-        - c: chord
-    
-        - deltasz: list of thicknesses on the TE. In case the upper and lower
-          surface are being analyzed, the first element in the list is related 
-          to the upper surface and the second to the lower surface. There are 
-          two because the CST method treats the airfoil surfaces as two 
-          different surfaces (upper and lower)
-        
-        - Au: list/float of Au coefficients, which are design parameters. If 
-          None,the surface is not analyzed. len(Au) equals  
-        
-        - Al: list/float of Al coefficients, which are design parameters. If 
-          None,the surface is not analyzed. len(Al) equals  
-         
-    The outputs are:
-        - y:
-          - for a full analysis: disctionary with keys 'u' and 'l' each with 
-            a list of the y positions for a surface.
-          - for a half analysis: a list with the list of the y postions of the
-            the desired surface
-        
-    Created on Sun Jan 19 16:36:55 2014
-    
-    Updated on Mon May 19 18:13:26 2014
-
-    @author: Pedro Leal
-    """
-
-    # Bersntein Polynomial
-    def K(r, n):
-        K = math.factorial(n) / (math.factorial(r) * math.factorial(n - r))
-        return K
-
-    # Shape Function   
-    def S(r, n, psi):
-        S = K(r, n) * (psi ** r) * (1. - psi) ** (n - r)
-        return S
-
-    # Class Function    
-    def C(N1, N2, psi):
-        C = ((psi) ** N1) * ((1. - psi) ** N2)
-        return C
-
-    if type(x) == list:
-        x = np.array(x)
-    # Adimensionalizing
-    psi = x / c;
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    #                           Class Function
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # The Coefficients for an airfoil with a rounded leading edge and a sharp
-    # trailing edge are N1=0.5 and N2=1.0.
-    N1 = 0.5;
-    N2 = 1.0;
-    C = C(N1, N2, psi);
-
-    # ==========================================================================
-    #                   Defining the working surfaces
-    # ==========================================================================
-    deltaz = {}
-    eta = {}
-    y = {}
-    Shape = {}
-
-    if Al and Au:
-        deltaz['u'] = deltasz[0]
-        deltaz['l'] = deltasz[1]
-
-        if len(Au) != len(Al):
-            raise Exception("Au and Al need to have the same dimensions")
-        elif len(deltasz) != 2:
-            raise Exception("If both surfaces are being analyzed, two values for deltasz are needed")
-
-    elif Au and not Al:
-        if type(deltasz) == list:
-            if len(deltaz['u']) != 1:
-                raise Exception("If only one surface is being analyzed, one value for deltasz is needed")
-            else:
-                deltaz['u'] = float(deltasz)
-        else:
-            deltaz['u'] = deltasz
-
-    elif Al and not Au:
-        if type(deltasz) == list:
-            if (deltaz['l']) != 1:
-                raise Exception("If only one surface is being analyzed, one value for deltasz is needed")
-            else:
-                deltaz['l'] = float(deltasz)
-        else:
-            deltaz['l'] = deltasz
-    else:
-        raise Exception("Au or Al need to have at least one value")
-    A = {'u': Au, 'l': Al}
-    for surface in ['u', 'l']:
-        if A[surface]:
-
-            if type(A[surface]) == int or type(A[surface]) == float:
-                A[surface] = [A[surface]]
-            # the degree of the Bernstein polynomial is given by the number of
-            # coefficients
-            n = len(A[surface]) - 1
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            #                           Shape Function
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            Shape[surface] = 0
-            for i in range(len(A[surface])):
-                #                print A
-                #                print S(i,n,psi)
-                if surface == 'l':
-                    Shape[surface] -= A[surface][i] * S(i, n, psi)
-                else:
-                    Shape[surface] += A[surface][i] * S(i, n, psi)
-
-                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                    #                           Airfoil Shape (eta=z/c)
-                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            # Airfoil Shape (eta=z/c)
-            if surface == 'l':
-                eta[surface] = C * Shape[surface] - psi * deltaz[surface] / c;
-            else:
-                eta[surface] = C * Shape[surface] + psi * deltaz[surface] / c;
-                # Giving back the dimensions
-            y[surface] = c * eta[surface]
-    if Al and Au:
-        return y
-    elif Au:
-        return y['u']
-    else:
-        return y['l']
 
 
 if __name__ == '__main__':

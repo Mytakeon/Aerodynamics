@@ -1,1 +1,3 @@
-{}
+{
+  "test_airfoil.py::TestAirfoil::test_xy_to_parsec": true
+}
