@@ -5,9 +5,11 @@ Airfoil class. See examples for possible uses.
 
 import logging
 import math
-from settings import FPATH_OUT
+
 import numpy as np
 import scipy.optimize as opt
+
+from settings import FPATH_OUT
 
 log = logging.getLogger(__name__)
 
@@ -98,13 +100,14 @@ class Airfoil:
         :rtype: float
         """
         if isinstance(other, Airfoil):
-            if np.array_equal(self.x, other.x):  # Now we can compare the y values
+            if np.allclose(self.x, other.x, atol=1e-3):  # Now we can compare the y values
                 delta_y = np.subtract(self.y, other.y)
                 e = np.sum(np.square(delta_y))
                 return e
 
             else:
                 log.error('If the x vectors are not the same, problem is more complicated')
+                return self.tol + 1
 
     @property
     def x(self):
@@ -159,12 +162,15 @@ class Airfoil:
         else:
             raise NotImplementedError('Case of uneven number of point not implemented')
 
-    def plot(self, plt, color='k'):
+    def plot(self, plt, color='k', title=None):
         """ Plots the airfoil. """
+
+        if not title:
+            title = self.__repr__()
 
         plt.plot(self.x, self.y, color)
         plt.axis('equal')
-        plt.title(self.__repr__())
+        plt.title(title)
         plt.xlabel('x')
         plt.ylabel('y')
         plt.show()
@@ -285,16 +291,10 @@ class Airfoil:
         else:
             camber = np.zeros(np.size(x))
 
-        y_upper = np.add(camber, thickness)
-        y_lower = np.subtract(camber, thickness)
-        # self.y_l = y_lower[1:]  # Take away the first element
-        self.y_l = y_lower
-        self.y_u = np.flipud(y_upper)  # Flip upside down
-
-        # Append the arrays that contain the x and y-coordinates
-        self.x_u = np.flipud(x)
-        # self.x_l = x[1:]
-        self.x_l = x
+        y_low = np.add(camber, thickness)
+        y_up = np.subtract(camber, thickness)
+        self.y_u = y_up
+        self.y_l = np.flipud(y_low)
 
     def naca_handler(self):
         """
