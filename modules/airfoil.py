@@ -5,7 +5,7 @@ Airfoil class. See examples for possible uses.
 
 import logging
 import math
-from settings import path_output
+from settings import FPATH_OUT
 import numpy as np
 import scipy.optimize as opt
 
@@ -98,11 +98,10 @@ class Airfoil:
         :rtype: float
         """
         if isinstance(other, Airfoil):
-            if isinstance(other.y, np.ndarray):
-                if np.array_equal(self.x, other.x):  # Now we can compare the y values
-                    delta_y = np.subtract(self.y, other.y)
-                    e = np.sum(np.square(delta_y))
-                    return e
+            if np.array_equal(self.x, other.x):  # Now we can compare the y values
+                delta_y = np.subtract(self.y, other.y)
+                e = np.sum(np.square(delta_y))
+                return e
 
             else:
                 log.error('If the x vectors are not the same, problem is more complicated')
@@ -316,15 +315,20 @@ class Airfoil:
         else:
             return AttributeError('NACA string definition %s not recognized' % self.naca_string)
 
-    def write_xy(self, fpath=None):
+    def write_xy(self, name=None, fpath=FPATH_OUT):
         """
-        Write the X, Y coordinates in a .dat file, in the output directory
+        Save the X,Y cooridnates of the airfoil into a .dat file
+        :param name: name of the file
+        :param fpath: output directory path
+        :return: None
         """
+
         coord = np.column_stack((self.x, self.y))
 
-        if not fpath:
-            dir_path = path_output
-            fpath = dir_path + '/' + self.naca_string + ".dat"
+        if not name:
+            name = self.naca_string
+
+        fpath = fpath + '/' + name + ".dat"
         np.savetxt(fpath, coord, delimiter=' ', fmt='%f')
 
 

@@ -12,7 +12,7 @@ import time
 
 import numpy as np
 
-from settings import path_xfoil, path_output
+from settings import FPATH_XFOIL, FPATH_OUT
 
 import logging
 log = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class XfoilAPI:
         self.alpha = alpha
 
         # Calling xfoil with Poper
-        self.ps = sp.Popen([path_xfoil], stdin=sp.PIPE, stdout=0, stderr=None)
+        self.ps = sp.Popen([FPATH_XFOIL], stdin=sp.PIPE, stdout=0, stderr=None)
 
     def issue_cmd(self, cmds):
         """
@@ -107,7 +107,7 @@ class XfoilAPI:
             else:
                 fname += self.airfoil
 
-        fpath = path_output + fname  # check if file already exists
+        fpath = FPATH_OUT + fname  # check if file already exists
 
         if os.path.isfile(fpath):
             if eraze:
@@ -324,7 +324,7 @@ def call(airfoil, alfas='none', output='Cp', Reynolds=0, Mach=0, plots=False,
     # console
     sout = 0
     # Calling xfoil with Poper
-    ps = sp.Popen([path_xfoil],
+    ps = sp.Popen([FPATH_XFOIL],
                   stdin=sp.PIPE,
                   stdout=sout,
                   stderr=None)
