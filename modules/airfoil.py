@@ -3,6 +3,7 @@
 Airfoil class. See examples for possible uses.
 """
 
+import re
 import logging
 import math
 
@@ -42,7 +43,7 @@ class Airfoil:
         self._p = None
         self.tol = 1e-4
         self.kwargs = kwargs  # Saving, only for the title of the plot
-        log.debug("Airfoil%s" % str(locals()))
+        log.debug("Airfoil%s\n" % kwargs)
         keys = list(kwargs.keys())
 
         for arg in self._init_kwargs:
@@ -75,6 +76,7 @@ class Airfoil:
 
     @property
     def p(self):
+        """ Automatically performs XY to PARSEC optimization if PARSEC in unkown."""
         if self._p is None:
             self._p = self.xy_to_parsec()
             self.unpack_parsec()
@@ -227,21 +229,23 @@ class Airfoil:
         c_up = c(1)
         c_low = c(4)
 
-        # todo: unsure why use radians instead of just tan here. Just following old matlab script for now.
+        # RHS vectors
+        b3 = math.tan(math.radians(p[9] - p[10] / 2))
         b_up = np.array([p[7] + p[8] / 2,
                          p[2],
-                         math.tan(p[9] - p[10] / 2),
+                         b3,
                          0,
                          p[3],
                          math.sqrt(2 * p[0])])
 
         b_low = np.array([-p[7] + p[8] / 2,
                           p[5],
-                          math.tan(p[9] - p[10] / 2),
+                          b3,
                           0,
                           p[3],
                           math.sqrt(2 * p[0])])
 
+        # Solve system of equation
         a_up = np.linalg.solve(c_up, b_up)
         a_low = np.linalg.solve(c_low, b_low)
         a = np.concatenate([a_up, a_low])
@@ -330,19 +334,27 @@ class Airfoil:
         Depending on naca_string, formats and calls the appropriate function.
         """
 
-        if 'NACA' in self.naca_string:
-            code = self.naca_string.replace('NACA', '')
-        else:
-            code = self.naca_string
+        # Todo: include NACA6 regex and computation
+        NACA_REGEX = {'NACA4': 'NACA(\d)(\d)(\d{2})',
+                      'NACA6': 'NACA|naca|6',
+                      'NACA6A': ''}
 
-        if len(code) is 4:  # 4 digits naca
-            m, p, t = int(code[0]) / 100, int(code[1]) / 10, int(code[2:]) / 100
-            self._naca4_to_xy(m, p, t)
+        key_found = False
+        for key, regex in NACA_REGEX.items():
+            obj = re.match(regex, self.naca_string)
+            if obj:
+                print(obj.groups())
+                if key == 'NACA4':
+                    m = int(obj.group(1)) / 100
+                    p = int(obj.group(2)) / 10
+                    t = int(obj.group(3)) / 100
+                    self._naca4_to_xy(m, p, t)
+                    key_found = True
+                    continue
 
-        if len(code) is 5:
-            return NotImplementedError('NACA5  not supported yet')
-        else:
-            return AttributeError('NACA string definition %s not recognized' % self.naca_string)
+        if not key_found:
+            msg = 'NACA description "%s" not recognized (see NACA_REGEX dictionary)' % self.naca_string
+            raise NotImplementedError(msg)
 
     def write_xy(self, name=None, fpath=FPATH_OUT):
         """
